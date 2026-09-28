@@ -118,7 +118,7 @@ def api_search(q: str = Query(..., min_length=2), x_api_token: str | None = Head
     _check_auth(x_api_token)
     try:
         results = _cached(f"search:{q.lower()}", lambda: search_matches(q))
-    except RuntimeError as e:
+    except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"ok": True, "results": results}
 
@@ -129,7 +129,7 @@ def api_odds(url: str = Query(...), x_api_token: str | None = Header(default=Non
     url = _ensure_oddsportal_url(url)
     try:
         snap = _cached(f"odds:{url}", lambda: get_match_odds(url))
-    except RuntimeError as e:
+    except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"ok": True, "snapshot": snap}
 
@@ -139,14 +139,14 @@ def api_snapshot(q: str = Query(..., min_length=2), x_api_token: str | None = He
     _check_auth(x_api_token)
     try:
         results = _cached(f"search:{q.lower()}", lambda: search_matches(q))
-    except RuntimeError as e:
+    except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     if not results:
         return {"ok": False, "error": "no matches found"}
     match = results[0]
     try:
         snap = _cached(f"odds:{match['url']}", lambda: get_match_odds(match["url"]))
-    except RuntimeError as e:
+    except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     if PEERS:
         snap, regions_ok = _cached(
