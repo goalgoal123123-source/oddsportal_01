@@ -105,9 +105,9 @@ def search_matches(query, timeout_ms=30000):
             if _looks_blocked(page):
                 raise RuntimeError("blocked by anti-bot challenge on team page")
 
-            # On the team page, collect match links.
-            # Match pages look like /football/england/premier-league/teamA-teamB-<id>/
-            links = page.query_selector_all('a[href*="/football/"], a[href*="/tennis/"], a[href*="/basketball/"]')
+            # On the team page, collect fixture links.
+            # Fixtures use /football/h2h/<home>-<id>/<away>-<id>/#<matchHash>
+            links = page.query_selector_all('a[href^="/football/h2h/"], a[href^="/tennis/h2h/"], a[href^="/basketball/h2h/"]')
             seen = set()
             for a in links:
                 try:
@@ -117,12 +117,9 @@ def search_matches(query, timeout_ms=30000):
                     continue
                 if not href or not text:
                     continue
-                if not re.search(r"/[a-z-]+/[a-z-]+/[a-z-]+/.+-[A-Za-z0-9]+/?$", href):
-                    continue
-                # skip team/outright pages
-                if "/team/" in href or "/outrights" in href:
-                    continue
+                # Strip the #hash for a canonical URL, keep it as match id hint
                 url = href if href.startswith("http") else BASE + href
+                url = url.split("#")[0]
                 if url in seen:
                     continue
                 seen.add(url)
