@@ -81,7 +81,8 @@ def api_debug_matchstat(x_api_token: str | None = Header(default=None)):
     """Debug: test Matchstat API connectivity from Render."""
     _check_auth(x_api_token)
     import time
-    result = {"key_set": bool(MATCHSTAT_API_KEY), "key_prefix": MATCHSTAT_API_KEY[:4] if MATCHSTAT_API_KEY else None}
+    key = MATCHSTAT_API_KEY or ""
+    result = {"key_set": bool(key), "key_len": len(key)}
     if not MATCHSTAT_API_KEY:
         result["error"] = "no key"
         return result
