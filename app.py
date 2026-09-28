@@ -246,27 +246,17 @@ def _fetch_matchstat_tennis(q):
         return None
     events = []
     try:
-        # Upcoming matches with pre-match odds (BASIC plan includes this)
-        # Response: {matches: [{player1: {name, odd}, player2: {name, odd}, tournament: {name}, date}]}
-        try:
-            data = _matchstat_get("tennis/v2/upcoming/matches?page=1&limit=100")
-            if data:
-                batch = data if isinstance(data, list) else data.get("matches", data.get("data", []))
-                if isinstance(batch, list):
-                    events.extend(batch)
-        except Exception:
-            pass
-        # Fallback: ATP/WTA fixtures (no odds, but has names)
-        if not events:
-            for tour in ("atp", "wta"):
-                try:
-                    data = _matchstat_get(f"tennis/v2/{tour}/fixtures?pageNo=1&pageSize=50")
-                    if data:
-                        batch = data if isinstance(data, list) else data.get("matches", data.get("data", data.get("fixtures", [])))
-                        if isinstance(batch, list):
-                            events.extend(batch)
-                except Exception:
-                    continue
+        # Today's fixtures (ATP + WTA) - correct endpoints per docs
+        for tour in ("atp", "wta"):
+            try:
+                data = _matchstat_get(f"tennis/v2/{tour}/fixtures?pageNo=1&pageSize=50")
+                if data:
+                    # response has matches array or data array
+                    batch = data if isinstance(data, list) else data.get("matches", data.get("data", data.get("fixtures", [])))
+                    if isinstance(batch, list):
+                        events.extend(batch)
+            except Exception:
+                continue
     except Exception:
         return None
     if not events:
