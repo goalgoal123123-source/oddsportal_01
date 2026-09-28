@@ -30,16 +30,12 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from scraper import BASE, search_matches, get_match_odds, merge_books, finalize_snapshot
-import scraper as _scraper_mod
 
 API_TOKEN = os.environ.get("API_TOKEN", "change-me")
 CACHE_TTL = int(os.environ.get("CACHE_TTL", "300"))  # seconds
 # The Odds API key for fast odds (free tier 500/month). If empty, /api/fast-odds
 # will skip straight to the scraper fallback.
 THE_ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "")
-# Matchstat (RapidAPI) key for fast tennis odds. Free 500/month.
-# If empty, tennis falls back to the OddsPortal scraper.
-MATCHSTAT_API_KEY = os.environ.get("MATCHSTAT_API_KEY", "")
 # Other region instances to aggregate bookmakers from, e.g.
 # PEERS="http://us-vps:8077,http://uk-vps:8077"  (same API_TOKEN on all)
 PEERS = [u.strip().rstrip("/") for u in os.environ.get("PEERS", "").split(",") if u.strip()]
@@ -52,26 +48,6 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def _startup():
-    # Warm up one headless Chromium so scrape requests reuse it
-    # instead of launching a fresh browser each time (~15s saved).
-    try:
-        _scraper_mod.init_browser()
-    except Exception as e:
-        # Don't fail startup if Playwright can't launch (e.g. no deps);
-        # per-request fallback will try again.
-        print(f"[startup] browser warm-up failed: {e}", flush=True)
-
-
-@app.on_event("shutdown")
-def _shutdown():
-    try:
-        _scraper_mod.close_browser()
-    except Exception:
-        pass
 
 _cache: dict = {}
 
@@ -199,7 +175,7 @@ def api_snapshot(q: str = Query(..., min_length=2), x_api_token: str | None = He
     return {"ok": True, "match": match, "snapshot": snap, "regions": regions_ok}
 
 
-# ---------- Matchstat (RapidAPI) fast tennis path ----------
+# ---------- The Odds API fast path (with scraper fallback) ----------
 
 # Sports to try in order for a team-name query. Each costs ~1 credit per call.
 _FAST_SPORTS = [
@@ -214,126 +190,6 @@ _FAST_SPORTS = [
     "baseball_mlb",
     "icehockey_nhl",
 ]
-
-
-def _matchstat_get(path):
-    """GET from Matchstat Tennis API via RapidAPI. Returns parsed JSON."""
-    if not MATCHSTAT_API_KEY:
-        return None
-    url = f"https://tennis-api-atp-wta-itf.p.rapidapi.com/{path}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "X-RapidAPI-Key": MATCHSTAT_API_KEY,
-            "X-RapidAPI-Host": "tennis-api-atp-wta-itf.p.rapidapi.com",
-            "User-Agent": "odds-scraper/1.0",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.load(r)
-
-
-def _fetch_matchstat_tennis(q):
-    """Search Matchstat for tennis matches by player name.
-
-    Returns a snapshot dict (same shape), or None if no match / no key.
-    Each search costs ~1-2 RapidAPI calls (fixtures are cached per day).
-    """
-    if not MATCHSTAT_API_KEY:
-        return None
-    words = [w.lower() for w in q.strip().split() if len(w) > 2]
-    if not words:
-        return None
-    try:
-        # Today's + tomorrow's fixtures (ATP, WTA)
-        data = _matchstat_get("tennis/fixtures")
-    except Exception:
-        return None
-    if not data:
-        return None
-    # data may be a list or dict with events key
-    events = data if isinstance(data, list) else data.get("events", data.get("fixtures", []))
-    best, best_score = None, 0
-    for ev in events or []:
-        # try common field names
-        p1 = str(ev.get("player1", ev.get("home", ev.get("p1", "")))).lower()
-        p2 = str(ev.get("player2", ev.get("away", ev.get("p2", "")))).lower()
-        combined = p1 + " " + p2
-        score = sum(1 for w in words if w in combined)
-        need = 1 if len(words) == 1 else 2
-        if score >= need and score > best_score:
-            best, best_score = ev, score
-    if not best:
-        return None
-    p1 = str(best.get("player1", best.get("home", best.get("p1", "Player 1"))))
-    p2 = str(best.get("player2", best.get("away", best.get("p2", "Player 2"))))
-    # odds fields: k1/k2 (moneyline)
-    try:
-        o1 = float(best.get("k1") or 0)
-        o2 = float(best.get("k2") or 0)
-    except (ValueError, TypeError):
-        return None
-    if not (o1 > 1 and o2 > 1):
-        return None
-    # devig two-way
-    ih, ia = 1 / o1, 1 / o2
-    tot = ih + ia
-    ph, pa = round(ih / tot * 100, 1), round(ia / tot * 100, 1)
-    import datetime
-    snapped = datetime.datetime.now(
-        datetime.timezone(datetime.timedelta(hours=8))
-    ).strftime("%Y年%-m月%-d日 %H:%M（香港時間）")
-    tour = str(best.get("tournament", best.get("event", "Tennis")))
-    return {
-        "home": p1,
-        "away": p2,
-        "comp": tour,
-        "kickoff": str(best.get("date", best.get("commence_time", ""))),
-        "market": "h2h（網球）",
-        "books": [["Matchstat", round(o1, 2), None, round(o2, 2)]],
-        "cons": [["主勝", ph], ["客勝", pa]],
-        "best": f"主勝 {o1}（Matchstat）・ 客勝 {o2}（Matchstat）",
-        "snapped": snapped,
-        "src": "Matchstat（RapidAPI）",
-        "note": "網球賽前賠率（免費版）；只供參考，不構成交易建議。",
-    }
-
-
-@app.get("/api/fast-odds")
-def api_fast_odds(q: str = Query(..., min_length=2), x_api_token: str | None = Header(default=None)):
-    """Fast odds via The Odds API, falling back to the OddsPortal scraper.
-
-    Returns {"ok": true, "snapshot": {...}, "source": "the-odds-api"|"oddsportal-scraper"}.
-    """
-    _check_auth(x_api_token)
-
-    def _do():
-        # 0) Tennis? Try Matchstat first (fast, ~3s). Heuristic: if The Odds
-        #    API path wouldn't cover it, skip straight to Matchstat for
-        #    likely-tennis queries is hard; just try Matchstat when the
-        #    Odds API finds nothing and a key is set.
-        # 1) Try The Odds API (fast, ~3s)
-        try:
-            snap = _fetch_the_odds_api(q)
-            if snap:
-                return {"ok": True, "snapshot": snap, "source": "the-odds-api"}
-        except RuntimeError as e:
-            if "quota_exceeded" not in str(e) and "invalid" not in str(e):
-                pass  # fall through to scraper on unexpected errors too
-            # quota_exceeded / invalid key -> fall through to scraper
-        except Exception:
-            pass  # any other error -> fall through to scraper
-
-        # 1b) Try Matchstat for tennis (fast, ~3s) before slow scrape
-        try:
-            snap = _fetch_matchstat_tennis(q)
-            if snap:
-                return {"ok": True, "snapshot": snap, "source": "matchstat"}
-        except Exception:
-            pass
-
-        # 2) Fallback: OddsPortal scraper (slow, ~60-90s with warm browser)
-        results = search_matches(q)
 
 
 def _the_odds_api_get(path, params):
@@ -486,6 +342,98 @@ def _fetch_the_odds_api(q):
     return None
 
 
+
+def _matchstat_get(path):
+    """GET from Matchstat Tennis API via RapidAPI. Returns parsed JSON or None."""
+    if not MATCHSTAT_API_KEY:
+        return None
+    url = f"https://tennis-api-atp-wta-itf.p.rapidapi.com/{path}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "X-RapidAPI-Key": MATCHSTAT_API_KEY,
+            "X-RapidAPI-Host": "tennis-api-atp-wta-itf.p.rapidapi.com",
+            "User-Agent": "odds-scraper/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def _fetch_matchstat_tennis(q):
+    """Search Matchstat for tennis matches by player name.
+    Returns a snapshot dict, or None if no match found / no key.
+    """
+    if not MATCHSTAT_API_KEY:
+        return None
+    words = [w.lower() for w in q.strip().split() if len(w) > 2]
+    if not words:
+        return None
+    events = []
+    # Upcoming matches with pre-match odds
+    data = _matchstat_get("tennis/v2/upcoming/matches?page=1&limit=100")
+    if data:
+        batch = data.get("matches", []) if isinstance(data, dict) else []
+        if isinstance(batch, list):
+            events.extend(batch)
+    if not events:
+        return None
+    # Find best matching event
+    best = None
+    best_score = 0
+    for ev in events:
+        p1_obj = ev.get("player1", {}) or {}
+        p2_obj = ev.get("player2", {}) or {}
+        p1 = str(p1_obj.get("name", "") if isinstance(p1_obj, dict) else "").lower()
+        p2 = str(p2_obj.get("name", "") if isinstance(p2_obj, dict) else "").lower()
+        combined = p1 + " " + p2
+        score = sum(1 for w in words if w in combined)
+        need = 1 if len(words) == 1 else 2
+        if score >= need and score > best_score:
+            best = ev
+            best_score = score
+    if not best:
+        return None
+    # Extract names and odds
+    p1_obj = best.get("player1", {}) or {}
+    p2_obj = best.get("player2", {}) or {}
+    p1 = str(p1_obj.get("name", "Player 1") if isinstance(p1_obj, dict) else "Player 1")
+    p2 = str(p2_obj.get("name", "Player 2") if isinstance(p2_obj, dict) else "Player 2")
+    try:
+        o1 = float(p1_obj.get("odd", 0) if isinstance(p1_obj, dict) else 0)
+        o2 = float(p2_obj.get("odd", 0) if isinstance(p2_obj, dict) else 0)
+    except (ValueError, TypeError):
+        return None
+    if not (o1 > 1 and o2 > 1):
+        return None
+    # Devig to get implied probabilities
+    ih, ia = 1 / o1, 1 / o2
+    tot = ih + ia
+    ph = round(ih / tot * 100, 1)
+    pa = round(ia / tot * 100, 1)
+    import datetime
+    snapped = datetime.datetime.now(
+        datetime.timezone(datetime.timedelta(hours=8))
+    ).strftime("%Y年%-m月%-d日 %H:%M（香港時間）")
+    tour_obj = best.get("tournament", {}) or {}
+    tour = str(tour_obj.get("name", "Tennis") if isinstance(tour_obj, dict) else "Tennis")
+    return {
+        "home": p1,
+        "away": p2,
+        "comp": tour,
+        "kickoff": str(best.get("date", "")),
+        "market": "h2h（網球）",
+        "books": [["Matchstat", round(o1, 2), None, round(o2, 2)]],
+        "cons": [["主勝", ph], ["客勝", pa]],
+        "best": f"主勝 {o1}（Matchstat）・ 客勝 {o2}（Matchstat）",
+        "snapped": snapped,
+        "src": "Matchstat（RapidAPI）",
+        "note": "網球賽前賠率（免費版）；只供參考，不構成交易建議。",
+    }
+
 @app.get("/api/fast-odds")
 def api_fast_odds(q: str = Query(..., min_length=2), x_api_token: str | None = Header(default=None)):
     """Fast odds via The Odds API, falling back to the OddsPortal scraper.
@@ -506,6 +454,14 @@ def api_fast_odds(q: str = Query(..., min_length=2), x_api_token: str | None = H
             # quota_exceeded / invalid key -> fall through to scraper
         except Exception:
             pass  # any other error -> fall through to scraper
+
+        # 1b) Try Matchstat for tennis (fast, ~2s) before slow scrape
+        try:
+            snap = _fetch_matchstat_tennis(q)
+            if snap:
+                return {"ok": True, "snapshot": snap, "source": "matchstat"}
+        except Exception:
+            pass
 
         # 2) Fallback: OddsPortal scraper (slow, ~2min on first hit)
         results = search_matches(q)
