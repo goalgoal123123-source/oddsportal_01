@@ -532,6 +532,113 @@ def _fetch_tennis_the_odds_api(q):
             continue
     return None
 
+
+def _frac_to_dec(frac_str):
+    """Convert fractional odds (e.g. '8/15') to decimal."""
+    try:
+        from fractions import Fraction
+        return round(float(Fraction(frac_str)) + 1, 2)
+    except Exception:
+        return None
+
+
+def _sofascore_get(path):
+    """GET from SofaScore unofficial API. Returns parsed JSON or None."""
+    url = f"https://api.sofascore.com/api/v1{path}"
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def _fetch_sofascore_tennis_live(q):
+    """Search SofaScore for LIVE tennis matches by player name.
+    Returns a snapshot dict with in-play odds, or None.
+    """
+    words = [w.lower() for w in q.strip().split() if len(w) > 2]
+    if not words:
+        return None
+    # Get live tennis events
+    data = _sofascore_get("/sport/tennis/events/live")
+    if not data:
+        return None
+    events = data.get("events", [])
+    if not events:
+        return None
+    # Find best matching event
+    best = None
+    best_score = 0
+    for ev in events:
+        home = ev.get("homeTeam", {}).get("name", "")
+        away = ev.get("awayTeam", {}).get("name", "")
+        combined = f"{home} {away}".lower()
+        score = sum(1 for w in words if w in combined)
+        need = 1 if len(words) == 1 else 2
+        if score >= need and score > best_score:
+            best = ev
+            best_score = score
+    if not best:
+        return None
+    # Get odds for this event
+    event_id = best.get("id")
+    if not event_id:
+        return None
+    odds_data = _sofascore_get(f"/event/{event_id}/odds/1/all")
+    if not odds_data:
+        return None
+    # Parse full-time winner market
+    markets = odds_data.get("markets", [])
+    home_odds = None
+    away_odds = None
+    for mkt in markets:
+        if mkt.get("marketName") == "Full time" or "winner" in str(mkt.get("marketName", "")).lower():
+            choices = mkt.get("choices", [])
+            if len(choices) >= 2:
+                # choices[0] = home, choices[1] = away typically
+                c0 = choices[0]
+                c1 = choices[1]
+                home_odds = _frac_to_dec(c0.get("fractionalValue", ""))
+                away_odds = _frac_to_dec(c1.get("fractionalValue", ""))
+                if home_odds and away_odds:
+                    break
+    if not (home_odds and away_odds):
+        return None
+    home = best.get("homeTeam", {}).get("name", "Home")
+    away = best.get("awayTeam", {}).get("name", "Away")
+    tour = best.get("tournament", {}).get("name", "Tennis")
+    # Devig
+    ih, ia = 1 / home_odds, 1 / away_odds
+    tot = ih + ia
+    ph = round(ih / tot * 100, 1)
+    pa = round(ia / tot * 100, 1)
+    import datetime
+    snapped = datetime.datetime.now(
+        datetime.timezone(datetime.timedelta(hours=8))
+    ).strftime("%Y年%-m月%-d日 %H:%M（香港時間）")
+    # Live score if available
+    hs = best.get("homeScore", {})
+    aws = best.get("awayScore", {})
+    score_str = ""
+    if hs and aws:
+        score_str = f" (比數 {hs.get('current', '?')}-{aws.get('current', '?')})"
+    return {
+        "home": home,
+        "away": away,
+        "comp": tour,
+        "kickoff": "LIVE in-play" + score_str,
+        "market": "h2h（網球・即時）",
+        "books": [["SofaScore", home_odds, None, away_odds]],
+        "cons": [["主勝", ph], ["客勝", pa]],
+        "best": f"主勝 {home_odds}・ 客勝 {away_odds}",
+        "snapped": snapped,
+        "src": "SofaScore",
+        "note": "網球即時 in-play 賠率（SofaScore 綜合盤）；只供參考，不構成交易建議。",
+    }
+
 @app.get("/api/fast-odds")
 def api_fast_odds(q: str = Query(..., min_length=2), x_api_token: str | None = Header(default=None)):
     """Fast odds via The Odds API, falling back to the OddsPortal scraper.
@@ -553,7 +660,15 @@ def api_fast_odds(q: str = Query(..., min_length=2), x_api_token: str | None = H
         except Exception:
             pass  # any other error -> fall through to scraper
 
-        # 1a) Try tennis via The Odds API (per-tournament keys)
+        # 1a) Try SofaScore LIVE tennis first (true in-play, ~1s, no key needed)
+        try:
+            snap = _fetch_sofascore_tennis_live(q)
+            if snap:
+                return {"ok": True, "snapshot": snap, "source": "sofascore-live"}
+        except Exception:
+            pass
+
+        # 1b) Try tennis via The Odds API (per-tournament keys)
         try:
             snap = _fetch_tennis_the_odds_api(q)
             if snap:
