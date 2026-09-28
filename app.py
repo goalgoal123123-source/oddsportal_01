@@ -684,7 +684,14 @@ def api_fast_odds(q: str = Query(..., min_length=2), x_api_token: str | None = H
         # except Exception:
         #     pass
 
-        # 2) Fallback: OddsPortal scraper (slow, ~2min on first hit)
+        # 1c) If tennis sources were tried but found nothing, fail fast
+        # (don't waste 60s on football scraper for tennis queries)
+        # Heuristic: single-word queries are likely tennis player names
+        if len(q.strip().split()) == 1:
+            return {"ok": True, "snapshot": None, "source": "none",
+                    "note": "Tennis: no live match found on SofaScore, no pre-match on The Odds API"}
+
+        # 2) Fallback: OddsPortal scraper (football only) (slow, ~2min on first hit)
         results = search_matches(q)
         if not results:
             return {"ok": False, "error": "no matches found"}
