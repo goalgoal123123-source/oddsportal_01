@@ -435,6 +435,103 @@ def _fetch_matchstat_tennis(q):
         "note": "網球賽前賠率（免費版）；只供參考，不構成交易建議。",
     }
 
+
+# Cache for active tennis tournament keys (refresh every hour)
+_tennis_keys_cache = {"keys": [], "ts": 0}
+
+def _get_active_tennis_keys():
+    """Get active tennis tournament keys from The Odds API."""
+    import time
+    now = time.time()
+    # Cache for 1 hour
+    if now - _tennis_keys_cache["ts"] < 3600 and _tennis_keys_cache["keys"]:
+        return _tennis_keys_cache["keys"]
+    if not THE_ODDS_API_KEY:
+        return []
+    try:
+        url = f"https://api.the-odds-api.com/v4/sports/?apiKey={THE_ODDS_API_KEY}&all=true"
+        req = urllib.request.Request(url, headers={"User-Agent": "odds-scraper/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            sports = json.load(r)
+        keys = []
+        for s in sports:
+            key = s.get("key", "")
+            # Active tennis tournaments only
+            if key.startswith("tennis_atp") or key.startswith("tennis_wta"):
+                if s.get("active", False):
+                    keys.append(key)
+        _tennis_keys_cache["keys"] = keys
+        _tennis_keys_cache["ts"] = now
+        return keys
+    except Exception:
+        return []
+
+
+def _fetch_tennis_the_odds_api(q):
+    """Search tennis matches via The Odds API per-tournament keys.
+    Returns a snapshot dict, or None if no match found.
+    """
+    if not THE_ODDS_API_KEY:
+        return None
+    words = [w.lower() for w in q.strip().split() if len(w) > 2]
+    if not words:
+        return None
+    keys = _get_active_tennis_keys()
+    if not keys:
+        return None
+    for tkey in keys[:5]:  # Check up to 5 active tournaments
+        try:
+            url = (f"https://api.the-odds-api.com/v4/sports/{tkey}/odds/"
+                   f"?apiKey={THE_ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=decimal")
+            req = urllib.request.Request(url, headers={"User-Agent": "odds-scraper/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                events = json.load(r)
+            for ev in events:
+                home = ev.get("home_team", "")
+                away = ev.get("away_team", "")
+                combined = f"{home} {away}".lower()
+                score = sum(1 for w in words if w in combined)
+                need = 1 if len(words) == 1 else 2
+                if score >= need:
+                    # Found! Build snapshot from bookmakers
+                    books = []
+                    for bm in ev.get("bookmakers", []):
+                        bname = bm.get("title", bm.get("key", ""))
+                        for mkt in bm.get("markets", []):
+                            if mkt.get("key") == "h2h":
+                                outs = {o.get("name"): o.get("price") for o in mkt.get("outcomes", [])}
+                                if home in outs and away in outs:
+                                    books.append([bname, outs[home], None, outs[away]])
+                    if not books:
+                        continue
+                    # Devig using best odds
+                    best_h = max(b[1] for b in books if b[1])
+                    best_a = max(b[3] for b in books if b[3])
+                    ih, ia = 1 / best_h, 1 / best_a
+                    tot = ih + ia
+                    ph = round(ih / tot * 100, 1)
+                    pa = round(ia / tot * 100, 1)
+                    import datetime
+                    snapped = datetime.datetime.now(
+                        datetime.timezone(datetime.timedelta(hours=8))
+                    ).strftime("%Y年%-m月%-d日 %H:%M（香港時間）")
+                    return {
+                        "home": home,
+                        "away": away,
+                        "comp": ev.get("sport_title", tkey),
+                        "kickoff": ev.get("commence_time", ""),
+                        "market": "h2h（網球）",
+                        "books": books,
+                        "cons": [["主勝", ph], ["客勝", pa]],
+                        "best": f"主勝 {best_h}・ 客勝 {best_a}",
+                        "snapped": snapped,
+                        "src": "The Odds API",
+                        "note": "網球賽前賠率；只供參考，不構成交易建議。",
+                    }
+        except Exception:
+            continue
+    return None
+
 @app.get("/api/fast-odds")
 def api_fast_odds(q: str = Query(..., min_length=2), x_api_token: str | None = Header(default=None)):
     """Fast odds via The Odds API, falling back to the OddsPortal scraper.
@@ -455,6 +552,14 @@ def api_fast_odds(q: str = Query(..., min_length=2), x_api_token: str | None = H
             # quota_exceeded / invalid key -> fall through to scraper
         except Exception:
             pass  # any other error -> fall through to scraper
+
+        # 1a) Try tennis via The Odds API (per-tournament keys)
+        try:
+            snap = _fetch_tennis_the_odds_api(q)
+            if snap:
+                return {"ok": True, "snapshot": snap, "source": "the-odds-api-tennis"}
+        except Exception:
+            pass
 
         # 1b) Try Matchstat for tennis (fast, ~2s) before slow scrape
         try:
