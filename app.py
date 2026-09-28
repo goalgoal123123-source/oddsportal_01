@@ -237,37 +237,27 @@ def _fetch_matchstat_tennis(q):
     """Search Matchstat for tennis matches by player name.
 
     Returns a snapshot dict (same shape), or None if no match / no key.
-    Each search costs ~2 RapidAPI calls (ATP + WTA fixtures).
+    Each search costs ~1-2 RapidAPI calls (fixtures are cached per day).
     """
     if not MATCHSTAT_API_KEY:
         return None
     words = [w.lower() for w in q.strip().split() if len(w) > 2]
     if not words:
         return None
-    events = []
     try:
-        # Today's fixtures (ATP + WTA) - correct endpoints per docs
-        for tour in ("atp", "wta"):
-            try:
-                data = _matchstat_get(f"tennis/v2/{tour}/fixtures?pageNo=1&pageSize=50")
-                if data:
-                    # response has matches array or data array
-                    batch = data if isinstance(data, list) else data.get("matches", data.get("data", data.get("fixtures", [])))
-                    if isinstance(batch, list):
-                        events.extend(batch)
-            except Exception:
-                continue
+        # Today's + tomorrow's fixtures (ATP, WTA)
+        data = _matchstat_get("tennis/fixtures")
     except Exception:
         return None
-    if not events:
+    if not data:
         return None
+    # data may be a list or dict with events key
+    events = data if isinstance(data, list) else data.get("events", data.get("fixtures", []))
     best, best_score = None, 0
     for ev in events or []:
-        # player1/player2 are objects with 'name' field (per Matchstat docs)
-        p1_obj = ev.get("player1", {}) or {}
-        p2_obj = ev.get("player2", {}) or {}
-        p1 = str(p1_obj.get("name", "") if isinstance(p1_obj, dict) else p1_obj).lower()
-        p2 = str(p2_obj.get("name", "") if isinstance(p2_obj, dict) else p2_obj).lower()
+        # try common field names
+        p1 = str(ev.get("player1", ev.get("home", ev.get("p1", "")))).lower()
+        p2 = str(ev.get("player2", ev.get("away", ev.get("p2", "")))).lower()
         combined = p1 + " " + p2
         score = sum(1 for w in words if w in combined)
         need = 1 if len(words) == 1 else 2
@@ -275,15 +265,12 @@ def _fetch_matchstat_tennis(q):
             best, best_score = ev, score
     if not best:
         return None
-    p1_obj = best.get("player1", {}) or {}
-    p2_obj = best.get("player2", {}) or {}
-    p1 = str(p1_obj.get("name", "Player 1") if isinstance(p1_obj, dict) else p1_obj)
-    p2 = str(p2_obj.get("name", "Player 2") if isinstance(p2_obj, dict) else p2_obj)
-    # odds: in 'odds' object with k1/k2, or player1/player2.odd, or top-level k1/k2
-    odds_obj = best.get("odds", {}) or {}
+    p1 = str(best.get("player1", best.get("home", best.get("p1", "Player 1"))))
+    p2 = str(best.get("player2", best.get("away", best.get("p2", "Player 2"))))
+    # odds fields: k1/k2 (moneyline)
     try:
-        o1 = float(odds_obj.get("k1") or (p1_obj.get("odd") if isinstance(p1_obj, dict) else 0) or best.get("k1") or 0)
-        o2 = float(odds_obj.get("k2") or (p2_obj.get("odd") if isinstance(p2_obj, dict) else 0) or best.get("k2") or 0)
+        o1 = float(best.get("k1") or 0)
+        o2 = float(best.get("k2") or 0)
     except (ValueError, TypeError):
         return None
     if not (o1 > 1 and o2 > 1):
@@ -296,8 +283,7 @@ def _fetch_matchstat_tennis(q):
     snapped = datetime.datetime.now(
         datetime.timezone(datetime.timedelta(hours=8))
     ).strftime("%Y年%-m月%-d日 %H:%M（香港時間）")
-    tour_obj = best.get("tournament", {}) or {}
-    tour = str(tour_obj.get("name", "") if isinstance(tour_obj, dict) else tour_obj) or "Tennis"
+    tour = str(best.get("tournament", best.get("event", "Tennis")))
     return {
         "home": p1,
         "away": p2,
