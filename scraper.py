@@ -57,7 +57,12 @@ def _looks_blocked(page):
 
 
 def search_matches(query, timeout_ms=30000):
-    """Search OddsPortal for matches matching the keyword query."""
+    """Search OddsPortal for matches matching the keyword query.
+
+    OddsPortal's search dropdown returns teams/players as <li> items
+    (JS navigation, no hrefs) — so we click the top team result, land on
+    the team page, and collect that team's upcoming match links.
+    """
     from playwright.sync_api import sync_playwright
 
     results = []
@@ -70,31 +75,39 @@ def search_matches(query, timeout_ms=30000):
             if _looks_blocked(page):
                 raise RuntimeError("blocked by anti-bot challenge on homepage")
 
-            # Find the site search box
-            search_box = None
-            for sel in SEARCH_INPUT_SELECTORS:
-                try:
-                    el = page.query_selector(sel)
-                    if el and el.is_visible():
-                        search_box = el
-                        break
-                except Exception:
-                    continue
-            if not search_box:
+            # OddsPortal search box (no <form>, no name attr)
+            search_box = page.query_selector("input#search-input")
+            if not search_box or not search_box.is_visible():
                 raise RuntimeError("search input not found (site layout may have changed)")
 
             search_box.click()
             search_box.fill("")  # clear first
             search_box.type(query, delay=80)  # type like a human to trigger AJAX
-            page.wait_for_timeout(3000)
 
-            # Collect dropdown / result links that look like match pages
+            # Wait for the autocomplete dropdown (li items, NOT links)
+            try:
+                page.wait_for_selector(".dropdown-content li", timeout=12000)
+            except Exception:
+                raise RuntimeError("search dropdown did not appear for query")
+            page.wait_for_timeout(1500)  # let all items render
+
+            items = page.query_selector_all(".dropdown-content li")
+            if not items:
+                raise RuntimeError("search returned no teams/players")
+            # Click the top result -> team page (JS navigation)
+            try:
+                with page.expect_navigation(wait_until="domcontentloaded", timeout=15000):
+                    items[0].click()
+            except Exception:
+                # navigation may have happened without the event firing
+                page.wait_for_timeout(3000)
+            page.wait_for_timeout(2000)
+            if _looks_blocked(page):
+                raise RuntimeError("blocked by anti-bot challenge on team page")
+
+            # On the team page, collect match links.
+            # Match pages look like /football/england/premier-league/teamA-teamB-<id>/
             links = page.query_selector_all('a[href*="/football/"], a[href*="/tennis/"], a[href*="/basketball/"]')
-            # If dropdown didn't show, try pressing Enter to go to search results page
-            if not links:
-                search_box.press("Enter")
-                page.wait_for_timeout(4000)
-                links = page.query_selector_all('a[href*="/football/"], a[href*="/tennis/"], a[href*="/basketball/"]')
             seen = set()
             for a in links:
                 try:
@@ -104,15 +117,18 @@ def search_matches(query, timeout_ms=30000):
                     continue
                 if not href or not text:
                     continue
-                # Match pages look like /football/england/premier-league/teamA-teamB-<id>/
                 if not re.search(r"/[a-z-]+/[a-z-]+/[a-z-]+/.+-[A-Za-z0-9]+/?$", href):
+                    continue
+                # skip team/outright pages
+                if "/team/" in href or "/outrights" in href:
                     continue
                 url = href if href.startswith("http") else BASE + href
                 if url in seen:
                     continue
                 seen.add(url)
-                # Try to pick up competition from nearby breadcrumb text
-                results.append({"title": text, "competition": "", "url": url})
+                # Tidy the title: collapse whitespace
+                title = re.sub(r"\s+", " ", text)
+                results.append({"title": title, "competition": "", "url": url})
                 if len(results) >= 10:
                     break
         finally:
