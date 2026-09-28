@@ -561,13 +561,13 @@ def api_fast_odds(q: str = Query(..., min_length=2), x_api_token: str | None = H
         except Exception:
             pass
 
-        # 1b) Try Matchstat for tennis (fast, ~2s) before slow scrape
-        try:
-            snap = _fetch_matchstat_tennis(q)
-            if snap:
-                return {"ok": True, "snapshot": snap, "source": "matchstat"}
-        except Exception:
-            pass
+        # 1b) Matchstat temporarily disabled (Render->RapidAPI connectivity issue)
+        # try:
+        #     snap = _fetch_matchstat_tennis(q)
+        #     if snap:
+        #         return {"ok": True, "snapshot": snap, "source": "matchstat"}
+        # except Exception:
+        #     pass
 
         # 2) Fallback: OddsPortal scraper (slow, ~2min on first hit)
         results = search_matches(q)
