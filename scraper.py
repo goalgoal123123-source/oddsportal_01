@@ -169,6 +169,18 @@ def get_match_odds(match_url, timeout_ms=45000):
             if _looks_blocked(page):
                 raise RuntimeError("blocked by anti-bot challenge on match page")
 
+            # The H2H page is a SPA — wait for the odds table to render.
+            # 1X2 table headers: Bookmakers | 1 | X | 2 | Payout
+            try:
+                page.wait_for_function(
+                    """() => [...document.querySelectorAll('table th')]
+                        .map(th => th.innerText.trim()).join('|').includes('1|X|2')""",
+                    timeout=20000,
+                )
+            except Exception:
+                pass  # fall through to the parse attempt anyway
+            page.wait_for_timeout(2000)
+
             title = page.title() or ""
             # Title is usually "TeamA - TeamB Betting Odds..." -> split teams
             home, away = "", ""
