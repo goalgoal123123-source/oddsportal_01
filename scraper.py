@@ -84,10 +84,26 @@ def search_matches(query, timeout_ms=30000):
             search_box.fill("")  # clear first
             search_box.type(query, delay=80)  # type like a human to trigger AJAX
 
-            # Wait for the autocomplete dropdown (li items, NOT links)
-            try:
-                page.wait_for_selector(".dropdown-content li", timeout=12000)
-            except Exception:
+            # Wait for the autocomplete dropdown (li items, NOT links).
+            # If the full query yields nothing (e.g. "Liverpool Man City"),
+            # fall back to the first word ("Liverpool").
+            queries_to_try = [query]
+            first_word = query.strip().split()[0] if query.strip() else ""
+            if first_word and first_word.lower() != query.strip().lower():
+                queries_to_try.append(first_word)
+            dropdown_ok = False
+            for qi, q in enumerate(queries_to_try):
+                if qi > 0:
+                    search_box.click()
+                    search_box.fill("")
+                    search_box.type(q, delay=80)
+                try:
+                    page.wait_for_selector(".dropdown-content li", timeout=12000)
+                    dropdown_ok = True
+                    break
+                except Exception:
+                    continue
+            if not dropdown_ok:
                 raise RuntimeError("search dropdown did not appear for query")
             page.wait_for_timeout(1500)  # let all items render
 
