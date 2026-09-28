@@ -76,10 +76,6 @@ def _ensure_oddsportal_url(url: str) -> str:
 
 
 
-@app.get("/api/debug-matchstat")
-def api_debug_matchstat():
-    return {"key_set": bool(MATCHSTAT_API_KEY), "status": "ok"}
-
 @app.get("/api/health")
 def health():
     return {"ok": True, "region": REGION, "peers": len(PEERS)}
