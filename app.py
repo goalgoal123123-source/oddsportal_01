@@ -143,7 +143,16 @@ def api_snapshot(q: str = Query(..., min_length=2), x_api_token: str | None = He
         raise HTTPException(status_code=502, detail=str(e))
     if not results:
         return {"ok": False, "error": "no matches found"}
+    # Pick the best match: if the query names two teams (e.g. "Liverpool Man City"),
+    # prefer a result whose title contains both; otherwise take the top result.
     match = results[0]
+    words = [w for w in q.strip().split() if len(w) > 2]
+    if len(words) >= 2:
+        for r in results:
+            t = r["title"].lower()
+            if all(w.lower() in t for w in words):
+                match = r
+                break
     try:
         snap = _cached(f"odds:{match['url']}", lambda: get_match_odds(match["url"]))
     except Exception as e:
