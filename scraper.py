@@ -238,20 +238,35 @@ def get_match_odds(match_url, timeout_ms=45000):
             if not books:
                 raise RuntimeError("odds table not parsed (site layout may have changed)")
 
-            # Competition + kickoff from breadcrumbs / page text (best effort)
+            # Competition + kickoff from the H2H page's UPCOMING MATCH section.
+            # H2H pages show e.g. "England / Premier League" and "Sunday, 11 Oct 2026, 23:30".
             comp = ""
-            try:
-                crumbs = page.query_selector_all("nav a, [class*='breadcrumb'] a")
-                ctexts = [(c.inner_text() or "").strip() for c in crumbs]
-                ctexts = [t for t in ctexts if t and t.lower() not in ("home",)]
-                if len(ctexts) >= 2:
-                    comp = " / ".join(ctexts[-2:])
-            except Exception:
-                pass
             kickoff = ""
             try:
-                body = page.content()
-                km = re.search(r"(\d{1,2} \w{3} \d{4}, \d{2}:\d{2})", body)
+                body_text = page.inner_text("body") or ""
+            except Exception:
+                body_text = ""
+            try:
+                # Find "UPCOMING MATCH" section and grab competition nearby
+                um = re.search(r"UPCOMING MATCH\s*([^\n]{2,60})", body_text)
+                if um:
+                    comp = um.group(1).strip()
+                    # clean up: take first line-ish, drop dates
+                    comp = re.sub(r"\s{2,}", " ", comp)
+            except Exception:
+                pass
+            if not comp:
+                # fallback: breadcrumbs
+                try:
+                    crumbs = page.query_selector_all("nav a, [class*='breadcrumb'] a")
+                    ctexts = [(c.inner_text() or "").strip() for c in crumbs]
+                    ctexts = [t for t in ctexts if t and t.lower() not in ("home",)]
+                    if len(ctexts) >= 2:
+                        comp = " / ".join(ctexts[-2:])
+                except Exception:
+                    pass
+            try:
+                km = re.search(r"(\d{1,2} \w{3} \d{4}, \d{2}:\d{2})", body_text)
                 if km:
                     kickoff = km.group(1)
             except Exception:
