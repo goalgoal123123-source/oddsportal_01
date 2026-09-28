@@ -84,11 +84,17 @@ def search_matches(query, timeout_ms=30000):
                 raise RuntimeError("search input not found (site layout may have changed)")
 
             search_box.click()
-            search_box.fill(query)
-            page.wait_for_timeout(2500)
+            search_box.fill("")  # clear first
+            search_box.type(query, delay=80)  # type like a human to trigger AJAX
+            page.wait_for_timeout(3000)
 
             # Collect dropdown / result links that look like match pages
             links = page.query_selector_all('a[href*="/football/"], a[href*="/tennis/"], a[href*="/basketball/"]')
+            # If dropdown didn't show, try pressing Enter to go to search results page
+            if not links:
+                search_box.press("Enter")
+                page.wait_for_timeout(4000)
+                links = page.query_selector_all('a[href*="/football/"], a[href*="/tennis/"], a[href*="/basketball/"]')
             seen = set()
             for a in links:
                 try:
