@@ -176,29 +176,52 @@ def get_match_odds(match_url, timeout_ms=45000):
             if m:
                 home, away = m.group(1).strip(), m.group(2).strip()
 
-            # Find the odds table: look for rows with a bookmaker name + 3 decimal odds
+            # Find the 1X2 odds table: real <table> with th headers
+            # Bookmakers | 1 | X | 2 | Payout. Odds live in
+            # <a class="font-main text-xs underline"> inside the 1/X/2 <td>s.
             books = []
-            rows = page.query_selector_all("table tbody tr, div[class*='odds'] table tr")
-            for r in rows:
+            for tbl in page.query_selector_all("table"):
                 try:
-                    cells = r.query_selector_all("td, div")
+                    headers = [(th.inner_text() or "").strip() for th in tbl.query_selector_all("th")]
                 except Exception:
                     continue
-                texts = [(c.inner_text() or "").strip() for c in cells]
-                texts = [t for t in texts if t]
-                if len(texts) < 4:
+                h = [x for x in headers if x]
+                # must look like a 1X2 table
+                if not ("1" in h and "X" in h and "2" in h):
                     continue
-                name = texts[0]
-                odds = [_parse_float(t) for t in texts[1:4]]
-                if (
-                    name
-                    and len(name) < 40
-                    and all(o and 1.01 <= o <= 500 for o in odds)
-                    and not any(ch in name for ch in ["\n", "Payout"])
-                ):
-                    # avoid duplicates
-                    if not any(b[0].lower() == name.lower() for b in books):
+                try:
+                    idx1, idxX, idx2 = h.index("1"), h.index("X"), h.index("2")
+                except ValueError:
+                    continue
+                for tr in tbl.query_selector_all("tbody tr"):
+                    try:
+                        tds = tr.query_selector_all("td")
+                    except Exception:
+                        continue
+                    if len(tds) <= max(idx1, idxX, idx2):
+                        continue
+                    # bookmaker name: first cell text, strip Review/Claim links noise
+                    try:
+                        name = (tds[0].inner_text() or "").strip().split("\n")[0].strip()
+                    except Exception:
+                        continue
+                    if not name or len(name) > 40:
+                        continue
+                    odds = []
+                    for i in (idx1, idxX, idx2):
+                        try:
+                            a = tds[i].query_selector("a")
+                            txt = (a.inner_text() if a else tds[i].inner_text()) or ""
+                            odds.append(_parse_float(txt.strip()))
+                        except Exception:
+                            odds.append(None)
+                    if (
+                        all(o and 1.01 <= o <= 500 for o in odds)
+                        and not any(b[0].lower() == name.lower() for b in books)
+                    ):
                         books.append([name, odds[0], odds[1], odds[2]])
+                if books:
+                    break  # got the 1X2 table, stop looking
             # Fallback: try a looser scan of the whole odds container
             if not books:
                 raise RuntimeError("odds table not parsed (site layout may have changed)")
