@@ -75,6 +75,45 @@ def _ensure_oddsportal_url(url: str) -> str:
     return url
 
 
+
+@app.get("/api/debug-matchstat")
+def api_debug_matchstat(x_api_token: str | None = Header(default=None)):
+    """Debug: test Matchstat API connectivity from Render."""
+    _check_auth(x_api_token)
+    import time
+    result = {"key_set": bool(MATCHSTAT_API_KEY), "key_prefix": MATCHSTAT_API_KEY[:4] if MATCHSTAT_API_KEY else None}
+    if not MATCHSTAT_API_KEY:
+        result["error"] = "no key"
+        return result
+    # Test 1: simple connectivity
+    start = time.time()
+    try:
+        data = _matchstat_get("tennis/v2/upcoming/matches?page=1&limit=2")
+        elapsed = round(time.time() - start, 2)
+        result["connectivity"] = "ok"
+        result["elapsed_s"] = elapsed
+        if data:
+            matches = data.get("matches", []) if isinstance(data, dict) else []
+            result["match_count"] = len(matches)
+            if matches:
+                m = matches[0]
+                result["sample"] = {
+                    "p1": m.get("player1", {}).get("name"),
+                    "p2": m.get("player2", {}).get("name"),
+                    "o1": m.get("player1", {}).get("odd"),
+                    "o2": m.get("player2", {}).get("odd"),
+                }
+            else:
+                result["sample"] = None
+        else:
+            result["match_count"] = 0
+            result["note"] = "empty response"
+    except Exception as e:
+        result["connectivity"] = "failed"
+        result["elapsed_s"] = round(time.time() - start, 2)
+        result["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    return result
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "region": REGION, "peers": len(PEERS)}
