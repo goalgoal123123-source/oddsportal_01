@@ -102,6 +102,10 @@ def _is_upcoming_fixture_link(text):
     t = (text or "").strip()
     if len(t) <= 3:
         return False
+    # Server-side innerText joins row cells with newlines
+    # (e.g. '10/Oct\n\nArsenal\n\n-\n\nLeeds'), so collapse whitespace
+    # before looking for the ' - ' team separator.
+    t = re.sub(r"\s+", " ", t)
     if " - " not in t:
         return False
     tl = t.lower()
