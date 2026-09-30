@@ -239,16 +239,21 @@ def search_matches(query, timeout_ms=30000):
                 if len(results) >= 10:
                     break
             if not results:
-                # Debug: count all h2h links and sample texts
+                # Debug: count all h2h links and sample texts from start/middle/end
                 try:
                     all_links = page.query_selector_all('a[href*="/h2h/"]')
                     n_all = len(all_links)
-                    samples = []
-                    for a in all_links[:5]:
+                    def _txt(a):
                         try:
-                            samples.append((a.inner_text() or "").strip()[:60])
+                            return (a.inner_text() or "").strip()[:70]
                         except Exception:
-                            pass
+                            return "?"
+                    idxs = list(range(0, min(5, n_all)))
+                    if n_all > 10:
+                        idxs += list(range(n_all//2 - 2, n_all//2 + 3))
+                    if n_all > 5:
+                        idxs += list(range(max(5, n_all-5), n_all))
+                    samples = [(i, _txt(all_links[i])) for i in idxs if i < n_all]
                 except Exception:
                     n_all, samples = -1, []
                 raise RuntimeError(
