@@ -201,21 +201,71 @@ def search_matches(query, timeout_ms=30000):
                     "(suggestion click failed)"
                 )
 
-            # Collect UPCOMING fixtures only. On a team page the first /h2h/
-            # links in DOM order are the form guide and past results —
-            # both are skipped by _is_upcoming_fixture_link.
-            # The fixtures section is SPA-rendered: wait until at least one
-            # link carries an upcoming-fixture date (e.g. "10/Oct") before
-            # collecting, otherwise we race the render and find nothing.
+            # Collect UPCOMING fixtures from the page's "Upcoming Fixtures"
+            # section (h2, with "Next Matches"/"Results" tabs). Scoping to
+            # that section keeps form-guide tooltips and past results
+            # elsewhere on the page from leaking in.
+            # The section is SPA-rendered and may lazy-load: make sure the
+            # "Next Matches" tab is active and scroll the section into view
+            # before collecting, otherwise we race the render and find nothing.
+            def _fixtures_section():
+                try:
+                    h2 = page.query_selector('h2:has-text("Upcoming Fixtures")')
+                except Exception:
+                    h2 = None
+                if not h2:
+                    return None
+                try:
+                    return h2.evaluate_handle(
+                        "el => el.closest('section') || el.parentElement"
+                    )
+                except Exception:
+                    return None
+
+            try:
+                page.wait_for_selector(
+                    'h2:has-text("Upcoming Fixtures")', timeout=15000
+                )
+            except Exception:
+                pass
+            # Activate the "Next Matches" tab if the page exposes one.
+            try:
+                tab = page.query_selector('button:has-text("Next Matches")')
+                if tab:
+                    tab.click()
+                    page.wait_for_timeout(1500)
+            except Exception:
+                pass
+            # Scroll the section into view to force lazy rendering, then
+            # wait until at least one fixture link carries a date (e.g. "10/Oct").
+            section = _fixtures_section()
+            if section:
+                try:
+                    section.evaluate("el => el.scrollIntoView({block: 'start'})")
+                    page.wait_for_timeout(1200)
+                except Exception:
+                    pass
             try:
                 page.wait_for_function(
-                    """() => [...document.querySelectorAll('a[href*="/h2h/"]')]
-                        .some(a => /\\d{1,2}\\/[A-Za-z]{3}/.test(a.innerText || ""))""",
+                    """() => {
+                        const h2 = [...document.querySelectorAll('h2')]
+                            .find(e => /upcoming fixtures/i.test(e.innerText || ''));
+                        const root = h2 ? (h2.closest('section') || h2.parentElement) : document;
+                        return [...root.querySelectorAll('a[href*="/h2h/"]')]
+                            .some(a => /\\d{1,2}\\/[A-Za-z]{3}/.test(a.innerText || ''));
+                    }""",
                     timeout=15000,
                 )
             except Exception:
                 pass
-            links = page.query_selector_all('a[href*="/h2h/"]')
+            section = _fixtures_section()
+            try:
+                if section:
+                    links = section.query_selector_all('a[href*="/h2h/"]')
+                else:
+                    links = page.query_selector_all('a[href*="/h2h/"]')
+            except Exception:
+                links = page.query_selector_all('a[href*="/h2h/"]')
             seen = set()
             for a in links:
                 try:
@@ -260,8 +310,8 @@ def search_matches(query, timeout_ms=30000):
                     n_all, samples = -1, []
                 raise RuntimeError(
                     f"no upcoming fixtures found for '{query}' "
-                    f"(landed on {page.url}; total h2h links={n_all}, "
-                    f"samples={samples})"
+                    f"(landed on {page.url}; fixtures section found={section is not None}, "
+                    f"section-scoped h2h links={len(links)}, samples={samples})"
                 )
         finally:
             browser.close()
