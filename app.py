@@ -96,9 +96,21 @@ def _peer_odds(base, url):
     return d["snapshot"]
 
 
+def _stamped_odds(url):
+    """get_match_odds + tag the snapshot with this collector's region."""
+    snap = get_match_odds(url)
+    snap["region"] = REGION
+    return snap
+
+
 def _aggregate(match_url, local_snap):
-    """Merge bookmakers from this region + peer regions into one snapshot."""
-    snaps = [local_snap]
+    """Merge bookmakers from this region + peer regions into one snapshot.
+
+    Each merged book is tagged with its source region:
+    [name, o1, ox, o2, region]. Region comes from each snapshot's own
+    'region' stamp (collectors tag their own); unknown -> '?'.
+    """
+    snaps = [(local_snap.get("region") or REGION, local_snap)]
     regions_ok = 1
     if PEERS:
         with ThreadPoolExecutor(max_workers=len(PEERS)) as ex:
@@ -106,18 +118,33 @@ def _aggregate(match_url, local_snap):
             for f in as_completed(futs):
                 s = f.result()
                 if s:
-                    snaps.append(s)
+                    snaps.append((s.get("region") or "?", s))
                     regions_ok += 1
-    books = merge_books([s.get("books") for s in snaps])
-    base = snaps[0]
+    # first occurrence wins, same rule as merge_books
+    book_region = {}
+    for region, s in snaps:
+        for b in s.get("books") or []:
+            try:
+                name = str(b[0]).strip()
+            except (IndexError, TypeError):
+                continue
+            k = name.lower()
+            if k and k not in book_region:
+                book_region[k] = region
+    books = merge_books([s.get("books") for _, s in snaps])
+    tagged = [
+        [b[0], b[1], b[2], b[3], book_region.get(str(b[0]).strip().lower(), "?")]
+        for b in books
+    ]
+    base = snaps[0][1]
     note = (
-        f"共 {len(books)} 間莊家（合併 {regions_ok} 個地區：{REGION}"
+        f"共 {len(tagged)} 間莊家（合併 {regions_ok} 個地區：{REGION}"
         + (f"＋{len(PEERS)} 個 peer" if PEERS else "")
         + "）；只供參考，不構成交易建議。"
     )
     merged = finalize_snapshot(
         base.get("home"), base.get("away"), base.get("comp"),
-        base.get("kickoff"), base.get("match_url"), books,
+        base.get("kickoff"), base.get("match_url"), tagged,
         "OddsPortal（即時搜尋・多地區合併）", note,
     )
     return merged, regions_ok
@@ -138,7 +165,7 @@ def api_odds(url: str = Query(...), x_api_token: str | None = Header(default=Non
     _check_auth(x_api_token)
     url = _ensure_oddsportal_url(url)
     try:
-        snap = _cached(f"odds:{url}", lambda: get_match_odds(url))
+        snap = _cached(f"odds:{url}", lambda: _stamped_odds(url))
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"ok": True, "snapshot": snap}
@@ -164,7 +191,7 @@ def api_snapshot(q: str = Query(..., min_length=2), x_api_token: str | None = He
                 match = r
                 break
     try:
-        snap = _cached(f"odds:{match['url']}", lambda: get_match_odds(match["url"]))
+        snap = _cached(f"odds:{match['url']}", lambda: _stamped_odds(match["url"]))
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     if PEERS:
@@ -703,7 +730,7 @@ def api_fast_odds(q: str = Query(..., min_length=2), x_api_token: str | None = H
                 if all(w.lower() in t for w in words):
                     match = r
                     break
-        snap = get_match_odds(match["url"])
+        snap = _stamped_odds(match["url"])
         if PEERS:
             snap, _ = _aggregate(match["url"], snap)
         return {"ok": True, "match": match, "snapshot": snap, "source": "oddsportal-scraper"}
