@@ -239,9 +239,22 @@ def search_matches(query, timeout_ms=30000):
                 if len(results) >= 10:
                     break
             if not results:
+                # Debug: count all h2h links and sample texts
+                try:
+                    all_links = page.query_selector_all('a[href*="/h2h/"]')
+                    n_all = len(all_links)
+                    samples = []
+                    for a in all_links[:5]:
+                        try:
+                            samples.append((a.inner_text() or "").strip()[:60])
+                        except Exception:
+                            pass
+                except Exception:
+                    n_all, samples = -1, []
                 raise RuntimeError(
                     f"no upcoming fixtures found for '{query}' "
-                    f"(landed on {page.url})"
+                    f"(landed on {page.url}; total h2h links={n_all}, "
+                    f"samples={samples})"
                 )
         finally:
             browser.close()
