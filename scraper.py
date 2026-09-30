@@ -204,6 +204,17 @@ def search_matches(query, timeout_ms=30000):
             # Collect UPCOMING fixtures only. On a team page the first /h2h/
             # links in DOM order are the form guide and past results —
             # both are skipped by _is_upcoming_fixture_link.
+            # The fixtures section is SPA-rendered: wait until at least one
+            # link carries an upcoming-fixture date (e.g. "10/Oct") before
+            # collecting, otherwise we race the render and find nothing.
+            try:
+                page.wait_for_function(
+                    """() => [...document.querySelectorAll('a[href*="/h2h/"]')]
+                        .some(a => /\\d{1,2}\\/[A-Za-z]{3}/.test(a.innerText || ""))""",
+                    timeout=15000,
+                )
+            except Exception:
+                pass
             links = page.query_selector_all('a[href*="/h2h/"]')
             seen = set()
             for a in links:
