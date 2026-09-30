@@ -293,32 +293,10 @@ def search_matches(query, timeout_ms=30000):
                 if len(results) >= 10:
                     break
             if not results:
-                # Debug: sample the SECTION-SCOPED links first (these are the
-                # fixture rows), then page-wide links for context.
-                try:
-                    def _info(a):
-                        try:
-                            t = (a.inner_text() or "").strip()[:80]
-                            h = (a.get_attribute("href") or "")[:80]
-                            return (t, h)
-                        except Exception:
-                            return ("?", "?")
-                    scoped_samples = [_info(a) for a in links[:6]]
-                    all_links = page.query_selector_all('a[href*="/h2h/"]')
-                    n_all = len(all_links)
-                    idxs = list(range(0, min(6, n_all)))
-                    if n_all > 12:
-                        idxs += list(range(n_all//2 - 3, n_all//2 + 3))
-                    if n_all > 6:
-                        idxs += list(range(max(6, n_all-6), n_all))
-                    samples = [(i,) + _info(all_links[i]) for i in idxs if i < n_all]
-                except Exception:
-                    scoped_samples, n_all, samples = [], -1, []
                 raise RuntimeError(
                     f"no upcoming fixtures found for '{query}' "
                     f"(landed on {page.url}; fixtures section found={section is not None}, "
-                    f"section-scoped h2h links={len(links)}, scoped_samples={scoped_samples}, "
-                    f"page-wide links={n_all}, samples={samples})"
+                    f"section-scoped fixture links={len(links)})"
                 )
         finally:
             browser.close()
