@@ -73,22 +73,61 @@ def _looks_blocked(page):
     )
 
 
+def _clean_fixture_title(text):
+    """Turn '10/Oct Arsenal Arsenal - Leeds Leeds' -> ('Arsenal - Leeds', '10/Oct').
+
+    Team-page fixture links duplicate team names (logo img alt + <p> text),
+    so collapse consecutively duplicated words.
+    """
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    date = ""
+    m = re.match(r"(\d{1,2}/[A-Za-z]{3}),?\s+(.*)$", text)
+    if m:
+        date, text = m.group(1), m.group(2)
+    text = re.sub(r"(?i)\b([\w']+)\b(?:\s+\1\b)+", r"\1", text)
+    return text.strip(), date
+
+
+def _is_upcoming_fixture_link(text):
+    """True only for upcoming-fixture rows on a team page.
+
+    Excludes the 'Last 6 Games Performance' form-guide links (single-letter
+    W/L/D texts, which come first in DOM order) and past-result rows
+    ('Finished'/'FIN' + scorelines).
+    """
+    t = (text or "").strip()
+    if len(t) <= 3:
+        return False
+    if " - " not in t:
+        return False
+    tl = t.lower()
+    if "finished" in tl or re.search(r"(^|\s)fin(\s|$)", tl):
+        return False
+    return True
+
+
 def search_matches(query, timeout_ms=30000):
     """Search OddsPortal for matches matching the keyword query.
 
-    OddsPortal's search dropdown returns teams/players as <li> items
-    (JS navigation, no hrefs) — so we click the top team result, land on
-    the team page, and collect that team's upcoming match links.
+    Types the query into the homepage search box, clicks the best-matching
+    autocomplete suggestion (a team/player page), and collects that page's
+    UPCOMING fixtures (the 'Next Matches' tab) as {title, competition, url}.
+
+    Raises RuntimeError with a clear message instead of silently returning
+    wrong matches (e.g. homepage fixtures when the suggestion click fails
+    to navigate).
     """
     from playwright.sync_api import sync_playwright
 
     results = []
+    query = (query or "").strip()
+    first_word = query.split()[0] if query else ""
     with sync_playwright() as p:
         browser, ctx = _new_context(p)
         try:
             page = ctx.new_page()
-            page.goto(BASE + "/", wait_until="domcontentloaded", timeout=timeout_ms)
-            # wait for search box instead of fixed sleep
+            homepage = BASE + "/"
+            page.goto(homepage, wait_until="domcontentloaded", timeout=timeout_ms)
             try:
                 page.wait_for_selector("input#search-input", timeout=10000)
             except Exception:
@@ -96,58 +135,66 @@ def search_matches(query, timeout_ms=30000):
             if _looks_blocked(page):
                 raise RuntimeError("blocked by anti-bot challenge on homepage")
 
-            # OddsPortal search box (no <form>, no name attr)
             search_box = page.query_selector("input#search-input")
             if not search_box or not search_box.is_visible():
                 raise RuntimeError("search input not found (site layout may have changed)")
 
-            search_box.click()
-            search_box.fill("")  # clear first
-            search_box.fill(query)  # fill is instant, no per-char delay
-            # trigger the AJAX dropdown with a minimal keypress
-            search_box.press("End")
-            page.wait_for_timeout(300)
-
-            # Wait for the autocomplete dropdown (li items, NOT links).
-            # If the full query yields nothing (e.g. "Liverpool Man City"),
-            # fall back to the first word ("Liverpool").
-            queries_to_try = [query]
-            first_word = query.strip().split()[0] if query.strip() else ""
-            if first_word and first_word.lower() != query.strip().lower():
-                queries_to_try.append(first_word)
-            dropdown_ok = False
-            for qi, q in enumerate(queries_to_try):
-                if qi > 0:
-                    search_box.click()
-                    search_box.fill("")
-                    search_box.fill(q)
-                    search_box.press("End")
-                    page.wait_for_timeout(300)
+            def _try_dropdown(q):
+                search_box.click()
+                search_box.fill("")
+                search_box.fill(q)
+                search_box.press("End")
+                page.wait_for_timeout(400)
                 try:
                     page.wait_for_selector(".dropdown-content li", timeout=8000)
+                    return True
+                except Exception:
+                    return False
+
+            queries_to_try = [query]
+            if first_word and first_word.lower() != query.lower():
+                queries_to_try.append(first_word)
+            dropdown_ok = False
+            for q in queries_to_try:
+                if _try_dropdown(q):
                     dropdown_ok = True
                     break
-                except Exception:
-                    continue
             if not dropdown_ok:
-                raise RuntimeError("search dropdown did not appear for query")
+                raise RuntimeError(f"search dropdown did not appear for query '{query}'")
 
+            # Pick the suggestion whose text best matches the query
+            # (dropdown rows are often identical, e.g. five 'Arsenal' rows).
             items = page.query_selector_all(".dropdown-content li")
             if not items:
-                raise RuntimeError("search returned no teams/players")
-            # Click the top result -> team page (JS navigation)
-            try:
-                with page.expect_navigation(wait_until="domcontentloaded", timeout=10000):
-                    items[0].click()
-            except Exception:
-                # navigation may have happened without the event firing
-                page.wait_for_timeout(1500)
-            if _looks_blocked(page):
-                raise RuntimeError("blocked by anti-bot challenge on team page")
+                raise RuntimeError("search returned no suggestions")
+            target = items[0]
+            want = first_word.lower()
+            for it in items:
+                try:
+                    t = (it.inner_text() or "").strip().lower()
+                except Exception:
+                    continue
+                if want and want in t:
+                    target = it
+                    break
 
-            # On the team page, collect fixture links.
-            # Fixtures use /football/h2h/<home>-<id>/<away>-<id>/#<matchHash>
-            links = page.query_selector_all('a[href^="/football/h2h/"], a[href^="/tennis/h2h/"], a[href^="/basketball/h2h/"]')
+            try:
+                with page.expect_navigation(wait_until="domcontentloaded", timeout=12000):
+                    target.click()
+            except Exception:
+                page.wait_for_timeout(2000)
+            if _looks_blocked(page):
+                raise RuntimeError("blocked by anti-bot challenge after search")
+            if page.url.rstrip("/") == homepage.rstrip("/"):
+                raise RuntimeError(
+                    f"search for '{query}' did not navigate to a team page "
+                    "(suggestion click failed)"
+                )
+
+            # Collect UPCOMING fixtures only. On a team page the first /h2h/
+            # links in DOM order are the form guide and past results —
+            # both are skipped by _is_upcoming_fixture_link.
+            links = page.query_selector_all('a[href*="/h2h/"]')
             seen = set()
             for a in links:
                 try:
@@ -155,19 +202,26 @@ def search_matches(query, timeout_ms=30000):
                     text = (a.inner_text() or "").strip()
                 except Exception:
                     continue
-                if not href or not text:
+                if not href or "/h2h/" not in href:
                     continue
-                # Strip the #hash for a canonical URL, keep it as match id hint
+                if not _is_upcoming_fixture_link(text):
+                    continue
                 url = href if href.startswith("http") else BASE + href
                 url = url.split("#")[0]
                 if url in seen:
                     continue
                 seen.add(url)
-                # Tidy the title: collapse whitespace
-                title = re.sub(r"\s+", " ", text)
+                title, date = _clean_fixture_title(text)
+                if date:
+                    title = f"{title} ({date})"
                 results.append({"title": title, "competition": "", "url": url})
                 if len(results) >= 10:
                     break
+            if not results:
+                raise RuntimeError(
+                    f"no upcoming fixtures found for '{query}' "
+                    f"(landed on {page.url})"
+                )
         finally:
             browser.close()
     return results
