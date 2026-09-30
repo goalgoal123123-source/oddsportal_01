@@ -91,9 +91,13 @@ def _clean_fixture_title(text):
 def _is_upcoming_fixture_link(text):
     """True only for upcoming-fixture rows on a team page.
 
-    Excludes the 'Last 6 Games Performance' form-guide links (single-letter
-    W/L/D texts, which come first in DOM order) and past-result rows
-    ('Finished'/'FIN' + scorelines).
+    Upcoming links look like '10/Oct Arsenal Arsenal - Leeds Leeds'
+    (date + teams with ' - ', no score). Excludes:
+    - 'Last 6 Games Performance' form badges ('W'/'L'/'D', or tooltips
+      like 'L3:0 (Brighton - Arsenal) 19.09.2026'),
+    - past-result rows ('Finished'/'FIN' + scorelines).
+    Both kinds share the same <a> class and /h2h/ URL pattern, so only
+    the link text can tell them apart.
     """
     t = (text or "").strip()
     if len(t) <= 3:
@@ -102,6 +106,12 @@ def _is_upcoming_fixture_link(text):
         return False
     tl = t.lower()
     if "finished" in tl or re.search(r"(^|\s)fin(\s|$)", tl):
+        return False
+    # form-badge tooltip: result letter glued to a scoreline, e.g. "L3:0"
+    if re.search(r"[WLD]\s*\d+\s*:\s*\d+", t):
+        return False
+    # upcoming fixture links carry a date like "10/Oct"
+    if not re.search(r"\d{1,2}/[A-Za-z]{3}", t):
         return False
     return True
 
